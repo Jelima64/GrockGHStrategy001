@@ -1,0 +1,161 @@
+import pandas as pd
+from collections import Counter
+from statistics import mean
+from random import sample, choices
+
+# Configurações iniciais
+INICIAIS_FINAIS = {1, 2, 3, 23, 24, 25}
+LINHAS = {
+    1: range(1, 6),
+    2: range(6, 11),
+    3: range(11, 16),
+    4: range(16, 21),
+    5: range(21, 26)
+}
+REPETICAO_ALVO = (8, 10)
+PRIMOS = {2, 3, 5, 7, 11, 13, 17, 19, 23}
+MOLDURA = {1, 2, 3, 4, 5, 6, 10, 11, 15, 16, 20, 21, 22, 23, 24, 25}
+
+def carregar_dados(arquivo='Lotofácil.xlsx'):
+    """Carrega os dados históricos da Lotofácil"""
+    try:
+        df = pd.read_excel(arquivo)
+        return [sorted(linha) for linha in df.filter(like='Bola').values.tolist()]
+    except Exception as e:
+        print(f"Erro ao carregar dados: {e}")
+        return None
+
+def calcular_estatisticas(concursos, n_concursos=15):
+    """Calcula estatísticas dos últimos concursos"""
+    stats = {
+        'frequencia': Counter(),
+        'atraso': {d: 0 for d in range(1, 26)},
+        'pares': Counter(),
+        'trios': Counter(),
+        'ultimo_concurso': concursos[-1] if concursos else [],
+        'soma_media': mean(sum(c) for c in concursos[-n_concursos:]) if concursos else 0
+    }
+    
+    for i, concurso in enumerate(concursos[-n_concursos:]):
+        stats['frequencia'].update(concurso)
+        for d in range(1, 26):
+            if d not in concurso:
+                stats['atraso'][d] += 1
+            else:
+                stats['atraso'][d] = 0
+        for j in range(len(concurso)-1):
+            stats['pares'][tuple(sorted(concurso[j:j+2]))] += 1
+            if j < len(concurso)-2:
+                stats['trios'][tuple(sorted(concurso[j:j+3]))] += 1
+    return stats
+
+def gerar_base_19(estatisticas):
+    """Gera a base de 19 dezenas com base nas estratégias de Gail Howard"""
+    # Números quentes (top 10 frequentes)
+    quentes = [d for d, _ in estatisticas['frequencia'].most_common(10)]
+    
+    # Números atrasados (top 5 com maior atraso)
+    atrasados = sorted(estatisticas['atraso'].items(), key=lambda x: x[1], reverse=True)[:5]
+    atrasados = [d for d, _ in atrasados]
+    
+    # Números de pares e trios frequentes
+    pares_fortes = {d for par, _ in estatisticas['pares'].most_common(10) for d in par}
+    trios_fortes = {d for trio, _ in estatisticas['trios'].most_common(5) for d in trio}
+    
+    # Combina as listas
+    base = list(set(quentes + atrasados + list(pares_fortes) + list(trios_fortes)))
+    
+    # Completa com diversidade
+    while len(base) < 19:
+        candidatos = [d for d in range(1, 26) if d not in base]
+        base.append(sample(candidatos, 1)[0])
+    
+    return sorted(base[:19])
+
+def validar_jogo(jogo, estatisticas):
+    """Valida o jogo com base nas estratégias de Gail Howard"""
+    ultimo = set(estatisticas['ultimo_concurso'])
+    jogo_set = set(jogo)
+    jogo_sorted = sorted(jogo)
+    
+    # Critérios de equilíbrio
+    impares = sum(1 for d in jogo if d % 2 == 1)
+    altos = sum(1 for d in jogo if d >= 13)
+    consecutivos = max(
+        sum(1 for i in range(len(jogo_sorted)-1) if jogo_sorted[i+1] - jogo_sorted[i] == 1) + 1
+        for i in range(len(jogo_sorted))
+    ) if jogo_sorted else 0
+    
+    criterios = {
+        'unicos': len(jogo_set) == 15,
+        'repetições': REPETICAO_ALVO[0] <= len(jogo_set & ultimo) <= REPETICAO_ALVO[1],
+        'soma': 160 <= sum(jogo) <= 210,  # Faixa ajustada
+        'linhas': all(any(d in intervalo for d in jogo) for intervalo in LINHAS.values()),
+        'primos': 4 <= sum(1 for d in jogo if d in PRIMOS) <= 7,
+        'moldura': 9 <= len(jogo_set & MOLDURA) <= 12,
+        'iniciais_finais': 2 <= len(jogo_set & INICIAIS_FINAIS) <= 4,
+        'impares': 6 <= impares <= 9,  # Equilíbrio ímpares/pares
+        'altos_baixos': 5 <= altos <= 10,  # Equilíbrio altos/baixos
+        'consecutivos': consecutivos <= 3  # Máximo 3 consecutivos
+    }
+    return all(criterios.values())
+
+def gerar_jogos(base_19, estatisticas):
+    """Gera 7 jogos de 15 dezenas a partir da base de 19"""
+    jogos = []
+    ultimo = set(estatisticas['ultimo_concurso'])
+    
+    rep_disponiveis = [d for d in base_19 if d in ultimo]
+    novos_disponiveis = [d for d in base_19 if d not in ultimo]
+    
+    for _ in range(7):
+        tentativas = 0
+        while tentativas < 100:
+            # Define repetições dinamicamente
+            max_rep = min(len(rep_disponiveis), 10)
+            min_rep = max(8, max_rep - 2) if max_rep >= 8 else 0
+            qtd_rep = sample(range(min_rep, max_rep+1), 1)[0] if max_rep >= 8 else max_rep
+            
+            repetidos = sample(rep_disponiveis, qtd_rep)
+            qtd_novos = 15 - qtd_rep
+            novos = sample(novos_disponiveis, qtd_novos)
+            
+            jogo = sorted(repetidos + novos)
+            
+            if validar_jogo(jogo, estatisticas) and jogo not in jogos:
+                jogos.append(jogo)
+                break
+            tentativas += 1
+    
+    return jogos[:7]
+
+def main():
+    print("🏆 Lotofácil Expert - Estratégias de Gail Howard")
+    
+    # Carregar dados
+    concursos = carregar_dados()
+    if not concursos or len(concursos) < 15:
+        return print("Erro: Dados insuficientes")
+    
+    # Calcular estatísticas
+    stats = calcular_estatisticas(concursos)
+    
+    # Gerar base de 19 dezenas
+    base_19 = gerar_base_19(stats)
+    print(f"\n🔍 Base de 19 Dezenas:\n{base_19}")
+    
+    # Gerar 7 jogos
+    jogos = gerar_jogos(base_19, stats)
+    
+    # Exibir resultados
+    print("\n🎯 7 Jogos Otimizados:")
+    for i, jogo in enumerate(jogos, 1):
+        print(f"\nJogo {i}:")
+        print(f"Dezenas: {jogo}")
+        print(f"• Repetições: {len(set(jogo) & set(stats['ultimo_concurso']))}")
+        print(f"• Primos: {sum(1 for d in jogo if d in PRIMOS)}")
+        print(f"• Soma: {sum(jogo)}")
+        print(f"• Moldura: {len(set(jogo) & MOLDURA)}")
+
+if __name__ == "__main__":
+    main()
