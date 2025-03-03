@@ -1,0 +1,145 @@
+import pandas as pd
+from collections import Counter
+from statistics import mean
+from random import sample, choices
+from google.colab import files
+
+# Configurações estratégicas
+INICIAIS_FINAIS = {1, 2, 3, 23, 24, 25}
+LINHAS = {
+    1: range(1, 6),
+    2: range(6, 11),
+    3: range(11, 16),
+    4: range(16, 21),
+    5: range(21, 26)
+}
+REPETICAO_ALVO = (8, 10)
+PRIMOS = {2, 3, 5, 7, 11, 13, 17, 19, 23}
+MOLDURA = {1, 2, 3, 4, 5, 6, 10, 11, 15, 16, 20, 21, 22, 23, 24, 25}
+
+def carregar_dados(arquivo='Lotofácil.xlsx'):
+    """Carrega os dados históricos da Lotofácil"""
+    try:
+        df = pd.read_excel(arquivo)
+        return [sorted(linha) for linha in df.filter(like='Bola').values.tolist()]
+    except Exception as e:
+        print(f"Erro ao carregar dados: {e}")
+        return None
+
+def calcular_estatisticas(concursos, n_concursos=15):
+    """Calcula estatísticas relevantes dos últimos concursos"""
+    stats = {
+        'frequencia': Counter(),
+        'pares': Counter(),
+        'ultimo_concurso': concursos[-1] if concursos else [],
+        'soma_media': mean(sum(c) for c in concursos[-n_concursos:]) if concursos else 0
+    }
+    
+    for concurso in concursos[-n_concursos:]:
+        stats['frequencia'].update(concurso)
+        for i in range(len(concurso)-1):
+            stats['pares'][tuple(sorted(concurso[i:i+2]))] += 1
+            
+    return stats
+
+def gerar_base_19(estatisticas):
+    """Gera a base de 19 dezenas estratégicas"""
+    # Seleciona as 15 mais frequentes
+    top15 = [d for d, _ in estatisticas['frequencia'].most_common(15)]
+    
+    # Adiciona 4 dezenas de pares fortes
+    pares_fortes = {d for par, _ in estatisticas['pares'].most_common(10) for d in par}
+    complemento = [d for d in pares_fortes if d not in top15][:4]
+    
+    return sorted(top15 + complemento)
+
+def validar_jogo(jogo, estatisticas):
+    """Valida o jogo de acordo com os critérios estratégicos"""
+    ultimo = set(estatisticas['ultimo_concurso'])
+    criterios = {
+        'unicos': len(set(jogo)) == 15,
+        'repetições': REPETICAO_ALVO[0] <= len(set(jogo) & ultimo) <= REPETICAO_ALVO[1],
+        'soma': 160 <= sum(jogo) <= 210,
+        'linhas': all(any(d in intervalo for d in jogo) for intervalo in LINHAS.values()),
+        'primos': 4 <= sum(1 for d in jogo if d in PRIMOS) <= 7,
+        'moldura': 9 <= len(set(jogo) & MOLDURA) <= 12,
+        'iniciais_finais': 2 <= len(set(jogo) & INICIAIS_FINAIS) <= 4
+    }
+    return all(criterios.values())
+
+def gerar_jogos(base_19, estatisticas):
+    """Gera 7 jogos válidos a partir da base de 19 dezenas"""
+    jogos = []
+    ultimo = set(estatisticas['ultimo_concurso'])
+    
+    rep_disponiveis = [d for d in base_19 if d in ultimo]
+    novos_disponiveis = [d for d in base_19 if d not in ultimo]
+    
+    for _ in range(7):
+        tentativas = 0
+        while tentativas < 100:
+            # Ajuste dinâmico de repetições
+            max_rep = min(len(rep_disponiveis), 10)
+            min_rep = max(8, max_rep - 2) if max_rep >= 8 else 0
+            
+            qtd_rep = sample(range(min_rep, max_rep+1), 1)[0] if max_rep >= 8 else max_rep
+            
+            try:
+                repetidos = sample(rep_disponiveis, qtd_rep)
+            except ValueError:
+                repetidos = rep_disponiveis.copy()
+            
+            # Gera novos números
+            qtd_novos = 15 - qtd_rep
+            try:
+                novos = sample(novos_disponiveis, qtd_novos)
+            except ValueError:
+                novos = novos_disponiveis.copy()
+            
+            jogo = sorted(repetidos + novos)
+            
+            # Completa com números faltantes
+            while len(jogo) < 15:
+                faltam = 15 - len(jogo)
+                complemento = sample([d for d in base_19 if d not in jogo], faltam)
+                jogo += complemento
+                jogo = sorted(list(set(jogo)))  # Remove duplicatas
+            
+            if validar_jogo(jogo, estatisticas) and jogo not in jogos:
+                jogos.append(jogo)
+                break
+                
+            tentativas += 1
+            
+    return jogos[:7]
+
+def main():
+    print("🏆 Lotofácil Expert v8.0 - Estratégia Completa")
+    
+    # Carregar dados históricos
+    concursos = carregar_dados()
+    if not concursos or len(concursos) < 15:
+        return print("Erro: Dados insuficientes para análise")
+    
+    # Calcular estatísticas
+    stats = calcular_estatisticas(concursos)
+    
+    # Gerar base estratégica
+    base_19 = gerar_base_19(stats)
+    print(f"\n🔍 Base de 19 Dezenas Gerada:\n{base_19}")
+    
+    # Gerar jogos válidos
+    jogos = gerar_jogos(base_19, stats)
+    
+    # Exibir resultados
+    print("\n🎯 7 Jogos Otimizados:")
+    for i, jogo in enumerate(jogos, 1):
+        print(f"\nJogo {i}:")
+        print(f"Dezenas: {jogo}")
+        print(f"• Repetições: {len(set(jogo)&set(stats['ultimo_concurso']))}")
+        print(f"• Primos: {sum(1 for d in jogo if d in PRIMOS)}")
+        print(f"• Soma: {sum(jogo)}")
+        print(f"• Moldura: {len(set(jogo) & MOLDURA)} dezenas")
+
+if __name__ == "__main__":
+    main()
