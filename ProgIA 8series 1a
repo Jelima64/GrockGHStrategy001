@@ -1,0 +1,67 @@
+import random # ==================>>> 1º Prog IA Grok 8 séries verificar <<<====================================
+from itertools import combinations
+
+# Todas as dezenas da Lotofácil (1 a 25)
+TODAS_DEZENAS = set(range(1, 26))
+
+# Configuração inicial
+dezenas_excluir = [17, 19]
+dezenas_fixar = [9, 23]
+
+print("Lotofácil: Gerando 8 séries de 21 jogos!")
+print(f"\nDezenas excluídas: {dezenas_excluir}")
+print(f"Dezenas fixas em todos os jogos: {dezenas_fixar}")
+
+# Determinar as 21 dezenas restantes (25 - 2 excluídas - 2 fixas = 21)
+dezenas_para_series = list(TODAS_DEZENAS - set(dezenas_excluir) - set(dezenas_fixar))
+
+# Selecionar 8 fixas para as séries (sem sobreposição com fixas gerais)
+fixas_series = dezenas_para_series[:8]  # Pegamos as primeiras 8 das restantes
+random.shuffle(fixas_series)  # Embaralhamos para variar as fixas por série
+
+# Gerar as 8 séries
+for serie in range(1, 9):
+    fixa_serie = fixas_series[serie-1]
+    print(f"\n--- Série {serie} (Fixa da série: {fixa_serie}) ---")
+
+    # Dezenas restantes para formar pares (excluindo a fixa da série)
+    dezenas_restantes_serie = [d for d in dezenas_para_series if d != fixa_serie]
+    random.shuffle(dezenas_restantes_serie)
+
+    # Formar 10 pares a partir das 20 dezenas restantes
+    pares = [(dezenas_restantes_serie[i], dezenas_restantes_serie[i+1]) for i in range(0, 20, 2)]
+
+    # Gerar combinações de 6 pares (15 dezenas por jogo)
+    combinacoes_pares = list(combinations(pares, 6))[:100]  # Testar até 100 combinações
+
+    jogos_validos = []
+    for comb in combinacoes_pares:
+        # Criar o jogo: fixas gerais + fixa da série + dezenas dos pares
+        jogo = set(dezenas_fixar + [fixa_serie])
+        for par in comb:
+            jogo.update(par)
+        jogo = sorted(list(jogo))
+
+        # Verificar se o jogo tem 15 dezenas e passa em um critério básico (exemplo: soma entre 180 e 250)
+        if len(jogo) == 15 and 180 <= sum(jogo) <= 250:
+            jogos_validos.append(jogo)
+            if len(jogos_validos) == 21:  # Parar ao atingir 21 jogos válidos
+                break
+
+    # Exibir jogos válidos
+    if jogos_validos:
+        print("\nJogos Válidos Gerados:")
+        for i, jogo in enumerate(jogos_validos, 1):
+            print(f"Jogo {i}: {jogo} (Soma: {sum(jogo)})")
+        print(f"\n{len(jogos_validos)} jogos válidos gerados para a série {serie}.")
+    else:
+        print("\nNenhum jogo válido gerado para esta série.")
+
+    # Calcular frequência das dezenas
+    frequencia = {}
+    for jogo in jogos_validos:
+        for dezena in jogo:
+            frequencia[dezena] = frequencia.get(dezena, 0) + 1
+    print("\nFrequência das Dezenas nos Jogos Válidos:")
+    for dezena in sorted(frequencia.keys()):
+        print(f"Dezena {dezena}: {frequencia[dezena]}") # ==================>>> 1º  Prog IA Grok 8 séries verificar <<<==================================
