@@ -1,0 +1,180 @@
+import pandas as pd # ==================>>> 2º Prog IA Grok 8 séries verificar <<<==================================
+from collections import Counter
+from itertools import combinations
+from random import sample
+
+# Configurações gerais
+TODAS_DEZENAS = set(range(1, 26))  # 25 dezenas da Lotofácil
+CONFIG = {'n_series': 8, 'n_jogos_por_serie': 21, 'n_concursos': [50, 25, 10]}
+
+# Carrega os dados do arquivo Lotofácil.xlsx
+def carregar_dados():
+    try:
+        df = pd.read_excel('Lotofácil.xlsx')
+        colunas = [c for c in df.columns if 'Bola' in c][:15]
+        return pd.DataFrame(df[colunas].values, columns=colunas).apply(
+            lambda x: sorted(x.dropna().astype(int)), axis=1)
+    except FileNotFoundError:
+        print("Erro: Arquivo 'Lotofácil.xlsx' não encontrado.")
+        return None
+    except Exception as e:
+        print(f"Erro ao carregar dados: {e}")
+        return None
+
+# Calcula frequência e atraso das dezenas
+def calcular_estatisticas(df, n_concursos):
+    freq = Counter()
+    atraso = {}
+    df_ultimos = df.tail(n_concursos)
+    for d in range(1, 26):
+        atraso[d] = next((i for i, jogo in enumerate(df_ultimos[::-1]) if d in jogo), n_concursos)
+    for jogo in df_ultimos:
+        freq.update(jogo)
+    return freq, atraso
+
+# Seleciona as duas dezenas a excluir
+def selecionar_dezenas_excluir(stats):
+    atraso_1 = [d for d in TODAS_DEZENAS if stats[10]['atraso'][d] == 1]
+    if len(atraso_1) < 2:
+        print("Aviso: Menos de duas dezenas com atraso de 1. Selecionando aleatoriamente.")
+        return sample(list(TODAS_DEZENAS), 2)
+    sorted_atraso_1 = sorted(atraso_1, key=lambda d: (stats[10]['freq'][d], d))
+    return sorted_atraso_1[:2]
+
+# Seleciona as duas dezenas fixas gerais
+def selecionar_dezenas_fixar(stats):
+    sorted_freq = sorted(TODAS_DEZENAS, key=lambda d: (-stats[10]['freq'][d], stats[10]['atraso'][d], d))
+    primeira_fixa = sorted_freq[0]
+    sorted_atraso = sorted(TODAS_DEZENAS, key=lambda d: (-stats[10]['atraso'][d], -stats[10]['freq'][d], d))
+    segunda_fixa = sorted_atraso[0]
+    if primeira_fixa == segunda_fixa:
+        segunda_fixa = sorted_atraso[1]
+    return [primeira_fixa, segunda_fixa]
+
+# Simula premiações de um jogo contra o histórico
+def simular_premiacoes(jogo, resultados_historicos):
+    premiacoes = {'11': 0, '12': 0, '13': 0, '14': 0, '15': 0}
+    for resultado in resultados_historicos:
+        acertos = len(set(jogo) & set(resultado))
+        if acertos >= 11:
+            premiacoes[str(acertos)] += 1
+    total = sum(premiacoes.values())
+    return premiacoes, total
+
+# Verifica se o jogo atende aos critérios de premiação
+def jogo_atende_criterios(premiacoes, total, limites):
+    if not (limites['11'][0] <= premiacoes['11'] <= limites['11'][1]): return False
+    if not (limites['12'][0] <= premiacoes['12'] <= limites['12'][1]): return False
+    if not (limites['13'][0] <= premiacoes['13'] <= limites['13'][1]): return False
+    if not (limites['14'][0] <= premiacoes['14'] <= limites['14'][1]): return False
+    if not (limites['total'][0] <= total <= limites['total'][1]): return False
+    if premiacoes['14'] > 0 or premiacoes['15'] > 0: return False
+    return True
+
+# Função principal
+def main():
+    print("Lotofácil: Gerando 8 séries de 21 jogos!")
+
+    # Carregar os dados
+    df = carregar_dados()
+    if df is None:
+        return
+
+    # Calcular estatísticas
+    stats = {}
+    for n in CONFIG['n_concursos']:
+        freq, atraso = calcular_estatisticas(df, n)
+        stats[n] = {'freq': freq, 'atraso': atraso}
+
+    # Resultados históricos para simulação
+    resultados_historicos = df.apply(set).tolist()
+
+    # Limites de premiação
+    limites = {'11': (255, 320), '12': (50, 70), '13': (1, 7), '14': (0, 1), 'total': (320, 380)}
+
+    # Selecionar as duas dezenas a excluir
+    dezenas_excluir = selecionar_dezenas_excluir(stats)
+    print(f"\nDezenas excluídas: {dezenas_excluir}")
+
+    # Selecionar as duas dezenas fixas gerais
+    dezenas_fixar = selecionar_dezenas_fixar(stats)
+    print(f"Dezenas fixas em todos os jogos: {dezenas_fixar}")
+
+    # Determinar as 21 dezenas restantes
+    dezenas_para_series = list(TODAS_DEZENAS - set(dezenas_excluir) - set(dezenas_fixar))
+
+    # Ordenar por atraso descendente para selecionar fixas por série
+    dezenas_para_series_sorted = sorted(dezenas_para_series, key=lambda d: -stats[10]['atraso'][d])
+    fixas_series = dezenas_para_series_sorted[:8]  # 8 fixas para as séries
+
+    # Armazenar pares usados para evitar repetição
+    pares_anteriores = []
+    jogos_gerados = set()
+
+    # Gerar as 8 séries
+    for serie in range(1, 9):
+        fixa_serie = fixas_series[serie-1]
+        print(f"\n--- Série {serie} (Fixa da série: {fixa_serie}) ---")
+
+        # Dezenas restantes para formar pares
+        dezenas_restantes_serie = [d for d in dezenas_para_series if d != fixa_serie]
+        dezenas_restantes_serie_sorted = sorted(dezenas_restantes_serie, key=lambda d: -stats[10]['freq'][d])
+
+        # Formar 10 pares (mais frequente com menos frequente)
+        pares = [(dezenas_restantes_serie_sorted[i], dezenas_restantes_serie_sorted[-(i+1)]) for i in range(10)]
+
+        # Reutilizar 4 pares da série anterior (se houver) e adicionar 2 novos
+        if serie > 1:
+            pares_sobrantes = [p for p in pares_anteriores[-1] if p not in [comb for comb in combinations(pares_anteriores[-1], 6)]]
+            pares_novos = [p for p in pares if p not in pares_anteriores[-1]][:2]
+            pares_base = pares_sobrantes[:4] + pares_novos
+            pares_disponiveis = [p for p in pares if p not in pares_base] + pares_base
+        else:
+            pares_disponiveis = pares
+
+        # Gerar 21 combinações de 6 pares
+        combinacoes_pares = list(combinations(pares_disponiveis, 6))[:21]
+        pares_anteriores.append(pares_disponiveis)
+
+        # Gerar os 21 jogos
+        jogos = []
+        for comb in combinacoes_pares:
+            jogo = tuple(sorted(dezenas_fixar + [fixa_serie] + [d for par in comb for d in par]))
+            if jogo not in jogos_gerados:  # Garantir unicidade
+                jogos.append(list(jogo))
+                jogos_gerados.add(jogo)
+
+        # Aplicar módulo de pré-teste
+        jogos_validos = []
+        for jogo in jogos:
+            premiacoes, total = simular_premiacoes(jogo, resultados_historicos)
+            if jogo_atende_criterios(premiacoes, total, limites):
+                jogos_validos.append(jogo)
+
+        # Imprimir jogos válidos
+        if jogos_validos:
+            print("\nJogos Válidos Gerados:")
+            for i, jogo in enumerate(jogos_validos, 1):
+                print(f"Jogo {i}: {jogo} (Soma: {sum(jogo)})")
+        else:
+            print("\nNenhum jogo válido gerado para esta série.")
+
+        # Exportar para Excel
+        if jogos_validos:
+            df_jogos = pd.DataFrame(jogos_validos, columns=[f"D{i+1}" for i in range(15)])
+            df_jogos.to_excel(f"jogos_lotofacil_serie_{serie}_validos.xlsx", index=False)
+            print(f"\n{len(jogos_validos)} jogos válidos gerados para a série {serie}.")
+        else:
+            print(f"\nNenhum jogo válido para a série {serie}.")
+
+        # Relatório de frequência
+        freq_jogos = Counter()
+        for jogo in jogos_validos:
+            freq_jogos.update(jogo)
+        print("\nFrequência das Dezenas nos Jogos Válidos:")
+        for d in sorted(dezenas_para_series):
+            if d in freq_jogos:
+                print(f"Dezena {d}: {freq_jogos[d]}")
+
+if __name__ == "__main__":
+    main() # ==================>>> 2º Prog IA Grok 8 séries verificar <<<=====
