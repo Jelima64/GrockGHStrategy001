@@ -1,0 +1,229 @@
+import pandas as pd  # ==================>>> 3º Prog IA Grok 8 séries verificar <<<================================
+from collections import Counter
+from itertools import combinations
+from random import sample
+
+# Configurações gerais
+TODAS_DEZENAS = set(range(1, 26))  # 25 dezenas da Lotofácil
+CONFIG = {'n_series': 8, 'n_jogos_por_serie': 21, 'n_concursos': [50, 25, 10]}
+
+# Função para determinar a linha de uma dezena (1 a 5)
+def get_linha(dezena):
+    if 1 <= dezena <= 5: return 1
+    elif 6 <= dezena <= 10: return 2
+    elif 11 <= dezena <= 15: return 3
+    elif 16 <= dezena <= 20: return 4
+    elif 21 <= dezena <= 25: return 5
+    return None
+
+# Função para montar um grupo de 3 dezenas
+def montar_grupo(dezenas_disponiveis, tamanho=3, restringir_linhas=True):
+    grupo = []
+    linhas_usadas = set()
+    for dezena in list(dezenas_disponiveis):
+        linha = get_linha(dezena)
+        if not restringir_linhas or linha not in linhas_usadas:
+            grupo.append(dezena)
+            linhas_usadas.add(linha)
+            if len(grupo) == tamanho:
+                break
+    if len(grupo) == tamanho:
+        for d in grupo:
+            dezenas_disponiveis.remove(d)
+        return grupo
+    return None
+
+# Carrega os dados do arquivo Lotofácil.xlsx
+def carregar_dados():
+    try:
+        df = pd.read_excel('Lotofácil.xlsx')
+        colunas = [c for c in df.columns if 'Bola' in c][:15]
+        return pd.DataFrame(df[colunas].values, columns=colunas).apply(
+            lambda x: sorted(x.dropna().astype(int)), axis=1)
+    except FileNotFoundError:
+        print("Erro: Arquivo 'Lotofácil.xlsx' não encontrado.")
+        return None
+    except Exception as e:
+        print(f"Erro ao carregar dados: {e}")
+        return None
+
+# Calcula frequência e atraso das dezenas
+def calcular_estatisticas(df, n_concursos):
+    freq = Counter()
+    atraso = {}
+    df_ultimos = df.tail(n_concursos)
+    for d in range(1, 26):
+        atraso[d] = next((i for i, jogo in enumerate(df_ultimos[::-1]) if d in jogo), n_concursos)
+    for jogo in df_ultimos:
+        freq.update(jogo)
+    return freq, atraso
+
+# Seleciona a dezena comum a ser excluída de todos os jogos
+def selecionar_dezena_comum(stats):
+    atraso_1 = [d for d in TODAS_DEZENAS if stats[10]['atraso'][d] == 1]
+    if atraso_1:
+        return min(atraso_1, key=lambda d: stats[10]['freq'][d])
+    else:
+        print("Nenhuma dezena com atraso de 1. Selecionando aleatoriamente.")
+        return sample(list(TODAS_DEZENAS), 1)[0]
+
+# Seleciona os 8 grupos de 3 dezenas excluídas
+def selecionar_grupos_excluidos(stats, dezena_comum):
+    available = list(TODAS_DEZENAS - {dezena_comum})
+    grupos = []
+
+    # Primeiro grupo fixo para o concurso 3341: [11, 15, 20]
+    primeiro_grupo = [11, 15, 20]
+    grupos.append(primeiro_grupo)
+    available = [d for d in available if d not in primeiro_grupo]
+
+    # Selecionar os outros 7 grupos
+    for _ in range(7):
+        sorted_by_freq = sorted(available, key=lambda d: stats[10]['freq'][d], reverse=True)
+        top_freq = sorted_by_freq[:2]
+        available = [d for d in available if d not in top_freq]
+        sorted_by_delay = sorted(available, key=lambda d: stats[10]['atraso'][d], reverse=True)
+        top_delay = sorted_by_delay[0]
+        available.remove(top_delay)
+        grupo = top_freq + [top_delay]
+        grupos.append(grupo)
+
+    return grupos
+
+# Gera os 21 jogos para uma série
+def gerar_21_jogos(dezenas_usar):
+    dezenas_disponiveis = list(dezenas_usar)
+    grupos = {}
+    labels = ['A', 'B', 'C', 'D', 'E', 'F', 'G']
+
+    for label in labels:
+        if len(dezenas_disponiveis) < 3:
+            print(f"Erro: Não há dezenas suficientes para montar o grupo {label}. Restam: {len(dezenas_disponiveis)}")
+            return None
+
+        # Tenta montar o grupo com restrição de linhas
+        grupo = montar_grupo(dezenas_disponiveis, tamanho=3, restringir_linhas=True)
+        if grupo is None:
+            print(f"Aviso: Não foi possível montar o grupo {label} com restrição de linhas. Tentando sem restrição.")
+            # Tenta novamente sem restrição de linhas
+            grupo = montar_grupo(dezenas_disponiveis, tamanho=3, restringir_linhas=False)
+            if grupo is None:
+                print(f"Erro: Não foi possível montar o grupo {label} mesmo sem restrição de linhas.")
+                return None
+        grupos[label] = grupo
+        print(f"Grupo {label}: {grupo}")
+
+    # Gerar 21 jogos combinando 5 grupos
+    combinacoes = list(combinations(grupos.keys(), 5))
+    jogos = [sorted(sum([grupos[g] for g in comb], [])) for comb in combinacoes[:21]]
+    return jogos
+
+# Função principal (trecho relevante)
+def main():
+    # ... (código anterior permanece igual até a geração das séries)
+
+    # Gerar as 8 séries
+    for serie in range(1, 9):
+        dezenas_excluir = [dezena_comum] + grupos_excluidos[serie-1]
+        print(f"\n--- Série {serie} (Ausentes: {sorted(dezenas_excluir)}) ---")
+
+        # Gerar os 21 jogos
+        dezenas_usar = TODAS_DEZENAS - set(dezenas_excluir)
+        jogos = gerar_21_jogos(dezenas_usar)
+        if not jogos:
+            continue
+
+        # ... (restante do código para validação e exportação permanece igual)
+
+# Simula premiações de um jogo contra o histórico
+def simular_premiacoes(jogo, resultados_historicos):
+    premiacoes = {'11': 0, '12': 0, '13': 0, '14': 0, '15': 0}
+    for resultado in resultados_historicos:
+        acertos = len(set(jogo) & set(resultado))
+        if acertos >= 11:
+            premiacoes[str(acertos)] += 1
+    total = sum(premiacoes.values())
+    return premiacoes, total
+
+# Verifica se o jogo atende aos critérios de premiação
+def jogo_atende_criterios(premiacoes, total, limites):
+    if not (limites['11'][0] <= premiacoes['11'] <= limites['11'][1]): return False
+    if not (limites['12'][0] <= premiacoes['12'] <= limites['12'][1]): return False
+    if not (limites['13'][0] <= premiacoes['13'] <= limites['13'][1]): return False
+    if not (limites['14'][0] <= premiacoes['14'] <= limites['14'][1]): return False
+    if not (limites['total'][0] <= total <= limites['total'][1]): return False
+    if premiacoes['14'] > 0 or premiacoes['15'] > 0: return False
+    return True
+
+# Função principal
+def main():
+    print("Lotofácil: Gerando 8 séries de 21 jogos!")
+
+    # Carregar os dados
+    df = carregar_dados()
+    if df is None:
+        return
+
+    # Calcular estatísticas
+    stats = {}
+    for n in CONFIG['n_concursos']:
+        freq, atraso = calcular_estatisticas(df, n)
+        stats[n] = {'freq': freq, 'atraso': atraso}
+
+    # Resultados históricos para simulação
+    resultados_historicos = df.apply(set).tolist()
+
+    # Limites de premiação
+    limites = {'11': (255, 320), '12': (50, 70), '13': (1, 7), '14': (0, 1), 'total': (320, 380)}
+
+    # Selecionar dezena comum
+    dezena_comum = selecionar_dezena_comum(stats)
+    print(f"\nDezena comum excluída de todos os jogos: {dezena_comum}")
+
+    # Selecionar os 8 grupos excluídos
+    grupos_excluidos = selecionar_grupos_excluidos(stats, dezena_comum)
+
+    # Gerar as 8 séries
+    for serie in range(1, 9):
+        dezenas_excluir = [dezena_comum] + grupos_excluidos[serie-1]
+        print(f"\n--- Série {serie} (Ausentes: {sorted(dezenas_excluir)}) ---")
+
+        # Gerar os 21 jogos
+        dezenas_usar = TODAS_DEZENAS - set(dezenas_excluir)
+        jogos = gerar_21_jogos(dezenas_usar)
+        if not jogos:
+            continue
+
+        # Aplicar o módulo de pré-seleção
+        jogos_validos = []
+        for jogo in jogos:
+            premiacoes, total = simular_premiacoes(jogo, resultados_historicos)
+            if jogo_atende_criterios(premiacoes, total, limites):
+                jogos_validos.append(jogo)
+
+        # Imprimir os jogos válidos
+        if jogos_validos:
+            print("\nJogos Válidos Gerados:")
+            for i, jogo in enumerate(jogos_validos, 1):
+                print(f"Jogo {i}: {jogo} (Soma: {sum(jogo)})")
+        else:
+            print("\nNenhum jogo válido gerado para esta série.")
+
+        # Exportar jogos válidos para Excel
+        if jogos_validos:
+            df_jogos = pd.DataFrame(jogos_validos, columns=[f"D{i+1}" for i in range(15)])
+            df_jogos.to_excel(f"jogos_lotofacil_serie_{serie}_validos.xlsx", index=False)
+            print(f"\n{len(jogos_validos)} jogos válidos gerados para a série {serie}.")
+        else:
+            print(f"\nNenhum jogo válido para a série {serie}.")
+
+        # Relatório de frequência
+        freq_jogos = Counter()
+        for jogo in jogos_validos:
+            freq_jogos.update(jogo)
+        print("\nFrequência das Dezenas nos Jogos Válidos:")
+        for d in sorted(dezenas_usar):
+            print(f"Dezena {d}: {freq_jogos[d]}")
+
+if __name__ == "__main__":
+    main() # ==================>>> 3º Prog IA Grok 8 séries verificar <<<===============================
