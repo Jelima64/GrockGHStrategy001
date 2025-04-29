@@ -1,0 +1,334 @@
+import pandas as pd # <<<==============>>> 1º Prog IA ICD - 25Abr2025 <<<=================>>>
+import numpy as np
+from itertools import combinations
+from collections import Counter
+import os
+import warnings
+import time # Para o indicador de progresso
+
+# Ignore warnings from pandas about potential future deprecations if any occur
+warnings.simplefilter(action='ignore', category=FutureWarning)
+
+# --- Configurações Globais ---
+NOME_ARQUIVO = 'Lotofácil.xlsx' # Certifique-se que este arquivo existe no Colab
+CONCURSO_ALVO = 3379
+ULTIMO_CONCURSO_NO_ARQUIVO = 3378 # Último concurso na planilha base
+ULTIMO_CONCURSO_SORTEADO = 3378 # O último que temos resultado
+
+# Resultados dos últimos concursos para adicionar
+resultados_novos = {
+    3377: {1, 2, 3, 5, 6, 7, 9, 10, 11, 16, 18, 19, 21, 22, 25},
+    3378: {1, 3, 4, 6, 7, 9, 12, 13, 14, 15, 17, 18, 19, 24, 25}
+}
+
+# Pesos do Índice Composto (Fixo para esta análise)
+W_ATRASO = 0.4
+W_FREQ = 0.6
+
+# Janelas de Frequência a Testar
+FREQ_WINDOWS = [14, 10, 7, 3]
+
+NUMEROS_TOTAIS = set(range(1, 26))
+
+# --- Funções Auxiliares ---
+
+def obter_dezenas_sorteadas(row):
+    """Extrai as dezenas sorteadas de uma linha do DataFrame (versão robusta)."""
+    dez_cols_bola = [f'Bola{i}' for i in range(1, 16)]
+    dez_cols_n = [f'N{i}' for i in range(1, 16)]
+    cols_to_use = None
+    row_index = row.index if isinstance(row, pd.Series) else row.keys()
+    if all(col in row_index for col in dez_cols_bola):
+        cols_to_use = dez_cols_bola
+    elif all(col in row_index for col in dez_cols_n):
+         cols_to_use = dez_cols_n
+    else:
+        numeric_col_indices = [i for i, col in enumerate(row_index) if isinstance(row[col], (int, float, np.number))]
+        if len(numeric_col_indices) >= 15:
+             first_num_idx = numeric_col_indices[0]
+             end_idx = min(first_num_idx + 15, len(row_index))
+             row_index_list = list(row_index)
+             cols_candidate = row_index_list[first_num_idx : end_idx]
+             if len(cols_candidate) == 15 and all(isinstance(row[c], (int, float, np.number)) for c in cols_candidate):
+                  cols_to_use = cols_candidate
+             else:
+                  cols_to_use = [row_index_list[i] for i in numeric_col_indices[:15]]
+
+    if cols_to_use and len(cols_to_use) >= 15:
+         try:
+            dezenas_raw = pd.to_numeric(row[cols_to_use].values, errors='coerce')
+            dezenas = set(pd.Series(dezenas_raw).astype('Int64').dropna().astype(int))
+            if len(dezenas) == 15 and all(1 <= d <= 25 for d in dezenas):
+                 return dezenas
+            else: return set()
+         except Exception: return set()
+    return set()
+
+def calcular_metricas_multi_freq(df, freq_windows):
+    """Calcula Atraso e Frequências Recentes para múltiplas janelas."""
+    print("   Iniciando cálculo de métricas...")
+    start_time = time.time()
+    df_sorted = df.sort_values(by='concurso').reset_index(drop=True)
+    ultimo_concurso_num = df_sorted['concurso'].iloc[-1]
+    metricas = {n: {} for n in NUMEROS_TOTAIS}
+    historico_presenca = {n: [] for n in NUMEROS_TOTAIS}
+    concursos_validos_indices = []
+    total_rows = len(df_sorted)
+
+    print(f"   Processando {total_rows} registros históricos...")
+    valid_rows_count = 0 # Contador para concursos válidos
+    for index, row in df_sorted.iterrows():
+        if (index + 1) % 500 == 0:
+            elapsed = time.time() - start_time
+            print(f"      Processado {index + 1}/{total_rows} (Tempo: {elapsed:.1f}s)")
+        sorteadas = obter_dezenas_sorteadas(row)
+        if len(sorteadas) == 15:
+            valid_rows_count += 1
+            concursos_validos_indices.append(index)
+            for n in NUMEROS_TOTAIS:
+                if n not in historico_presenca: historico_presenca[n] = []
+                historico_presenca[n].append(1 if n in sorteadas else 0)
+        # Se a linha não for válida, o historico_presenca não é atualizado para manter o alinhamento
+
+    num_concursos_validos = valid_rows_count # Usa o contador de válidos
+    if num_concursos_validos == 0: raise ValueError("Nenhum concurso válido encontrado.")
+    print(f"   ... Processamento histórico concluído em {time.time() - start_time:.1f}s ({num_concursos_validos} concursos válidos).")
+
+    print("   Calculando atraso e frequências...")
+    # Calcula Atraso
+    for n in NUMEROS_TOTAIS:
+        ultimo_aparecimento_idx = -1
+        if n in historico_presenca and historico_presenca[n]:
+            lista_presenca_n = historico_presenca[n]
+            # Itera de trás para frente na lista de presença (que só tem dados válidos)
+            for i in range(len(lista_presenca_n) - 1, -1, -1):
+                if lista_presenca_n[i] == 1:
+                    ultimo_aparecimento_idx = i
+                    break
+        # Atraso é o número de concursos VÁLIDOS desde a última aparição
+        metricas[n]['atraso'] = (num_concursos_validos - 1) - ultimo_aparecimento_idx if ultimo_aparecimento_idx != -1 else num_concursos_validos
+
+    # Calcula Frequências Recentes
+    for n in NUMEROS_TOTAIS:
+        metricas[n]['freq_raw'] = {} # Guarda frequências raw aqui
+        if n in historico_presenca and historico_presenca[n]:
+            presenca_dezena = historico_presenca[n] # Lista de presença (só de válidos)
+            for window in freq_windows:
+                # Pega os últimos 'window' resultados VÁLIDOS
+                start_index = max(0, len(presenca_dezena) - window)
+                ultimos_n_presenca = presenca_dezena[start_index:]
+                freq_raw_val = sum(ultimos_n_presenca)
+                metricas[n][f'freq_rec_{window}'] = freq_raw_val
+                metricas[n]['freq_raw'][window] = freq_raw_val # Guarda raw também
+        else:
+             # Garante que o atraso existe mesmo se nunca apareceu
+             if 'atraso' not in metricas[n]:
+                 metricas[n]['atraso'] = num_concursos_validos
+             for window in freq_windows:
+                 metricas[n][f'freq_rec_{window}'] = 0
+                 metricas[n]['freq_raw'][window] = 0
+
+    print("   ... Cálculo de métricas concluído.")
+    return metricas
+
+
+def normalize_metrics_multi_freq(metricas, freq_windows):
+    """Normaliza Atraso e as múltiplas Frequências Recentes."""
+    print("   Normalizando métricas...")
+    norm_metrics = {n: {} for n in NUMEROS_TOTAIS}
+    atraso_values = [metricas[n]['atraso'] for n in NUMEROS_TOTAIS if 'atraso' in metricas[n]]
+    if not atraso_values: return norm_metrics
+    min_atraso, max_atraso = min(atraso_values), max(atraso_values)
+    range_atraso = max_atraso - min_atraso
+    for n in NUMEROS_TOTAIS:
+        if 'atraso' in metricas[n]:
+             norm_metrics[n]['atraso_norm'] = 0.5 if range_atraso == 0 else (metricas[n]['atraso'] - min_atraso) / range_atraso
+        else: norm_metrics[n]['atraso_norm'] = 0.5 # Default
+
+    for window in freq_windows:
+        freq_key = f'freq_rec_{window}'
+        norm_key = f'freq_rec_{window}_norm'
+        freq_values = [metricas[n][freq_key] for n in NUMEROS_TOTAIS if freq_key in metricas[n]]
+        if not freq_values: continue
+        min_freq, max_freq = min(freq_values), max(freq_values)
+        range_freq = max_freq - min_freq
+        for n in NUMEROS_TOTAIS:
+             if freq_key in metricas[n]:
+                 norm_metrics[n][norm_key] = 0.5 if range_freq == 0 else (metricas[n][freq_key] - min_freq) / range_freq
+             else: norm_metrics[n][norm_key] = 0.5 # Default
+    print("   ... Normalização concluída.")
+    return norm_metrics
+
+
+def calcular_indice_e_componentes(metricas_normalizadas, freq_windows): # Renomeado parâmetro para clareza
+    """Calcula o Índice e seus componentes ponderados."""
+    print("   Calculando índices e componentes...")
+    final_indices = {w: {} for w in freq_windows}
+    atraso_components = {w: {} for w in freq_windows}
+    freq_components = {w: {} for w in freq_windows}
+
+    for n in NUMEROS_TOTAIS:
+        atraso_norm = metricas_normalizadas.get(n, {}).get('atraso_norm', 0.5) # Usa o parâmetro correto
+        atraso_comp = W_ATRASO * atraso_norm
+        for window in freq_windows:
+            freq_norm = metricas_normalizadas.get(n, {}).get(f'freq_rec_{window}_norm', 0.5) # Usa o parâmetro correto
+            freq_comp = W_FREQ * freq_norm
+            indice = atraso_comp + freq_comp
+
+            final_indices[window][n] = indice
+            atraso_components[window][n] = atraso_comp
+            freq_components[window][n] = freq_comp
+
+    print("   ... Cálculo de índices concluído.")
+    return final_indices, atraso_components, freq_components
+
+
+# --- Programa Principal ---
+if __name__ == "__main__":
+    print(f"--- Lotofácil Análise Comparativa de FreqN para Previsão do Concurso {CONCURSO_ALVO} ---")
+    print(f"--- Dados considerados ATÉ o Concurso {ULTIMO_CONCURSO_SORTEADO} ---")
+
+    if not os.path.exists(NOME_ARQUIVO):
+        print(f"\nERRO: Arquivo '{NOME_ARQUIVO}' não encontrado!")
+        print("Por favor, faça o upload do arquivo para o ambiente do Google Colab.")
+    else:
+        try:
+            print(f"\n1. Carregando e preparando dados...")
+            # Leitura do arquivo
+            try:
+                df_lotofacil = pd.read_excel(NOME_ARQUIVO, engine='openpyxl')
+            except Exception:
+                 try:
+                     df_lotofacil = pd.read_excel(NOME_ARQUIVO, engine='xlrd')
+                 except Exception as e:
+                      print(f"ERRO: Falha ao ler o arquivo Excel: {e}")
+                      raise e
+
+            # Limpeza e Formatação
+            df_lotofacil.columns = df_lotofacil.columns.str.lower().str.strip().str.replace(' ', '_').str.normalize('NFKD').str.encode('ascii', errors='ignore').str.decode('utf-8')
+            if 'concurso' not in df_lotofacil.columns:
+                 possible_concurso_cols = [col for col in df_lotofacil.columns if 'conc' in col or 'sorteio' in col]
+                 if possible_concurso_cols:
+                     df_lotofacil.rename(columns={possible_concurso_cols[0]: 'concurso'}, inplace=True)
+                 else: raise ValueError("Coluna 'Concurso' não encontrada.")
+            df_lotofacil['concurso'] = pd.to_numeric(df_lotofacil['concurso'], errors='coerce')
+            df_lotofacil.dropna(subset=['concurso'], inplace=True)
+            df_lotofacil['concurso'] = df_lotofacil['concurso'].astype(int)
+            df_lotofacil = df_lotofacil[df_lotofacil['concurso'] <= ULTIMO_CONCURSO_NO_ARQUIVO]
+
+            # Anexando resultados recentes
+            print(f"   Anexando resultados dos concursos {list(resultados_novos.keys())}...")
+            novos_dados = []
+            colunas_dezenas_base = []
+            dez_cols_exist = [c for c in df_lotofacil.columns if c.startswith(('bola', 'n')) or c.isdigit()]
+            colunas_dezenas_base = dez_cols_exist[:15] if len(dez_cols_exist) >= 15 else [f'n{i}' for i in range(1, 16)]
+
+            for concurso, dezenas in resultados_novos.items():
+                 if concurso > df_lotofacil['concurso'].max():
+                     linha = {'concurso': concurso}
+                     dezenas_list = sorted(list(dezenas))
+                     for i, d in enumerate(dezenas_list):
+                          if i < len(colunas_dezenas_base):
+                             col_name = colunas_dezenas_base[i]
+                             linha[col_name] = d
+                     for col in df_lotofacil.columns:
+                         if col not in linha: linha[col] = pd.NA
+                     novos_dados.append(linha)
+
+            if novos_dados:
+                 df_novos = pd.DataFrame(novos_dados)
+                 cols_df = set(df_lotofacil.columns)
+                 cols_novos = set(df_novos.columns)
+                 for col in cols_df - cols_novos: df_novos[col] = pd.NA
+                 for col in cols_novos - cols_df: df_lotofacil[col] = pd.NA
+                 # Garante que as colunas estão na mesma ordem antes de concatenar
+                 df_lotofacil = pd.concat([df_lotofacil, df_novos[df_lotofacil.columns]], ignore_index=True)
+
+
+            # Filtro final
+            df_analise = df_lotofacil[df_lotofacil['concurso'] <= ULTIMO_CONCURSO_SORTEADO].copy()
+            df_analise.sort_values(by='concurso', inplace=True)
+            df_analise.reset_index(drop=True, inplace=True)
+
+            if df_analise.empty: raise ValueError(f"Nenhum dado encontrado até o concurso {ULTIMO_CONCURSO_SORTEADO}.")
+            print(f"   Analisando {len(df_analise)} concursos (até {df_analise['concurso'].iloc[-1]}).")
+
+            # 2. Calcular Métricas
+            print("\n2. Calculando Atraso e Frequências Recentes...")
+            metricas = calcular_metricas_multi_freq(df_analise, FREQ_WINDOWS)
+
+            # 3. Normalizar Métricas
+            print("\n3. Normalizando métricas...")
+            norm_metrics = normalize_metrics_multi_freq(metricas, FREQ_WINDOWS) # <<< CORREÇÃO AQUI
+
+            # 4. Calcular Índices e Componentes
+            print("\n4. Calculando Índices Compostos e Componentes...")
+            # Passa a variável correta 'norm_metrics' para a função
+            indices_por_freq, atraso_comps_por_freq, freq_comps_por_freq = calcular_indice_e_componentes(norm_metrics, FREQ_WINDOWS)
+
+            # 5. Gerar Relatório Detalhado e Comparativo
+            print("\n5. Gerando Relatórios...")
+
+            # --- Relatório Detalhado por Janela ---
+            markdown_output_detalhes = "\n## Detalhamento do Índice por Dezena e Janela FreqN\n\n"
+            markdown_output_detalhes += f"**Para Concurso:** {CONCURSO_ALVO} | **Base:** Até {ULTIMO_CONCURSO_SORTEADO}\n"
+            markdown_output_detalhes += f"**Fórmula:** Índice = (0.6 * Atraso_Norm) + (0.4 * FreqN_Norm)\n\n"
+
+            for window in FREQ_WINDOWS:
+                markdown_output_detalhes += f"#### Janela: Freq{window}\n\n"
+                markdown_output_detalhes += "| Dezena | Atraso (Raw) | Freq (Raw) | Atraso Comp (Pond) | Freq Comp (Pond) | Índice Final |\n"
+                markdown_output_detalhes += "|--------|--------------|------------|--------------------|------------------|--------------|\n"
+                # Ordena por índice final para ver os mais prováveis ausentes no topo
+                dezenas_ordenadas = sorted(NUMEROS_TOTAIS, key=lambda n: indices_por_freq.get(window, {}).get(n, -1), reverse=True)
+
+                for n in dezenas_ordenadas:
+                     # Usa .get com default 'N/A' para evitar erros se a chave não existir
+                     atraso_raw = metricas.get(n, {}).get('atraso', 'N/A')
+                     freq_raw = metricas.get(n, {}).get('freq_raw', {}).get(window, 'N/A')
+                     atraso_comp = atraso_comps_por_freq.get(window, {}).get(n, 0.0)
+                     freq_comp = freq_comps_por_freq.get(window, {}).get(n, 0.0)
+                     indice_final = indices_por_freq.get(window, {}).get(n, 0.0)
+                     markdown_output_detalhes += f"| {n:02d}     | {str(atraso_raw):<12} | {str(freq_raw):<10} | {atraso_comp:<18.4f} | {freq_comp:<16.4f} | {indice_final:<12.4f} |\n" # Converte raw para str
+                markdown_output_detalhes += "\n"
+
+            # --- Relatório Comparativo Top 10 ---
+            top_10_ausentes_por_freq = {}
+            markdown_output_comparativo = f"## Comparativo: Top 10 Prováveis Ausentes para Conc. {CONCURSO_ALVO}\n\n"
+            markdown_output_comparativo += f"**Baseado nos resultados ATÉ o Concurso {ULTIMO_CONCURSO_SORTEADO}.**\n"
+            markdown_output_comparativo += "**Índice = 0.6 * Atraso_Norm + 0.4 * FreqN_Norm**\n\n"
+            markdown_output_comparativo += "| Janela Freq (N) | Top 10 Dezenas Mais Prováveis Ausentes (Maior Índice) |\n"
+            markdown_output_comparativo += "|-----------------|-------------------------------------------------------|\n"
+
+            for window in FREQ_WINDOWS:
+                indices_window = indices_por_freq.get(window, {})
+                if not indices_window: continue
+                ranking_window = sorted(NUMEROS_TOTAIS, key=lambda n: indices_window.get(n, -1), reverse=True)
+                top_10 = ranking_window[:10]
+                top_10_ausentes_por_freq[window] = top_10
+                top_10_str = ", ".join(f"{d:02d}" for d in top_10)
+                markdown_output_comparativo += f"| Freq{window:<11} | {top_10_str}         |\n"
+
+            # --- Exibição ---
+            print("\n" + "="*40 + " RELATÓRIO DETALHADO " + "="*40)
+            print(markdown_output_detalhes)
+            print("\n" + "="*40 + " RELATÓRIO COMPARATIVO TOP 10 " + "="*30)
+            print(markdown_output_comparativo)
+            print("="*90)
+
+
+            # Bloco de Análise Final
+            print("\n**Análise:**")
+            print("1. **Verifique a Tabela Detalhada:** Observe como a 'Freq (Raw)', 'Freq Comp (Pond)' e o 'Índice Final' mudam para cada dezena ao variar a janela (Freq10 -> Freq3).")
+            print("2. **Verifique a Tabela Comparativa:** Veja quais dezenas permanecem consistentemente no Top 10 (prováveis ausentes) e quais entram ou saem dependendo da janela de frequência.")
+            print("   - Janelas menores (Freq5, Freq3) são mais voláteis e influenciadas pelos últimos jogos.")
+            print("   - Janelas maiores (Freq10, Freq8) mostram uma tendência mais suavizada.")
+            print("3. **Escolha sua Janela:** Qual janela (Freq10, 8, 5 ou 3) gerou o Top 10 que parece mais razoável ou alinhado com outras análises que você fez para o concurso de amanhã?")
+            print("4. **Próximo Passo:** Use a lista Top 10 da janela escolhida para definir seus grupos AP (Ausentes Primárias - Excluídas) e AS (Ausentes Secundárias - Monitoradas) e então gere os jogos.")
+
+        except FileNotFoundError:
+             print(f"\nERRO CRÍTICO: O arquivo '{NOME_ARQUIVO}' não foi encontrado.")
+             print("Certifique-se de fazer o upload para o ambiente Colab.")
+        except Exception as e:
+            print(f"\nOcorreu um erro inesperado durante a execução:")
+            import traceback
+            print(traceback.format_exc()) # Imprime o traceback completo do erro # <<< 1º Prog IA ICD - 28Abr2025 <<<==========>>>
