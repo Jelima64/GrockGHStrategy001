@@ -1,0 +1,349 @@
+import pandas as pd # =========>>> Mega-Sena <<<==============
+import numpy as np
+from itertools import combinations
+from collections import Counter
+import os
+import warnings
+import time # Para o indicador de progresso
+
+# Ignore warnings from pandas about potential future deprecations if any occur
+warnings.simplefilter(action='ignore', category=FutureWarning)
+
+# --- Configurações Globais para Mega-Sena ---
+NOME_ARQUIVO = 'Mega-Sena.xlsx' # <<< ATENÇÃO: Use o nome do seu arquivo da Mega-Sena
+CONCURSO_ALVO = 2856 # <<< AJUSTE: Coloque o número do próximo concurso da Mega-Sena
+# Último concurso na planilha base (AJUSTE se seu arquivo for mais antigo/recente)
+ULTIMO_CONCURSO_NO_ARQUIVO = 2856
+# Último concurso sorteado da Mega-Sena que você tem os dados
+ULTIMO_CONCURSO_SORTEADO = 2856
+
+# <<< ATENÇÃO: Adicione aqui os resultados recentes da Mega-Sena que não estão no arquivo >>>
+# Formato: {numero_concurso: {dezena1, dezena2, dezena3, dezena4, dezena5, dezena6}}
+resultados_novos = {
+    2855: {12, 16, 24, 31, 51, 55},
+    2856: {3, 5, 10, 27, 38, 48},
+    # Adicione mais concursos se necessário
+}
+
+# Pesos do Índice Composto (Ajustáveis se desejar testar)
+W_ATRASO = 0.75
+W_FREQ = 0.25
+
+# Janelas de Frequência a Testar (Podem ser ajustadas para Mega-Sena, talvez janelas maiores?)
+FREQ_WINDOWS = [20, 15, 10, 5] # Exemplo: Testando janelas diferentes para Mega
+
+NUMEROS_TOTAIS = set(range(1, 61)) # <<< Mudança para Mega-Sena (1 a 60)
+NUMEROS_SORTEADOS = 6             # <<< Mudança para Mega-Sena
+
+# --- Funções Auxiliares ---
+
+def obter_dezenas_sorteadas_mega(row):
+    """Extrai as 6 dezenas sorteadas da Mega-Sena."""
+    global NUMEROS_SORTEADOS # Acessa a variável global
+    # Tenta encontrar colunas nomeadas 'Bola1' a 'Bola6' ou 'N1' a 'N6'
+    dez_cols_bola = [f'Bola{i}' for i in range(1, NUMEROS_SORTEADOS + 1)]
+    dez_cols_n = [f'N{i}' for i in range(1, NUMEROS_SORTEADOS + 1)]
+    cols_to_use = None
+    row_index = row.index if isinstance(row, pd.Series) else row.keys()
+
+    if all(col in row_index for col in dez_cols_bola):
+        cols_to_use = dez_cols_bola
+    elif all(col in row_index for col in dez_cols_n):
+         cols_to_use = dez_cols_n
+    else:
+        # Tenta abordagem genérica
+        numeric_col_indices = [i for i, col in enumerate(row_index) if isinstance(row[col], (int, float, np.number))]
+        if len(numeric_col_indices) >= NUMEROS_SORTEADOS:
+             first_num_idx = numeric_col_indices[0]
+             end_idx = min(first_num_idx + NUMEROS_SORTEADOS, len(row_index))
+             row_index_list = list(row_index)
+             cols_candidate = row_index_list[first_num_idx : end_idx]
+             if len(cols_candidate) == NUMEROS_SORTEADOS and all(isinstance(row[c], (int, float, np.number)) for c in cols_candidate):
+                  cols_to_use = cols_candidate
+             else:
+                  cols_to_use = [row_index_list[i] for i in numeric_col_indices[:NUMEROS_SORTEADOS]]
+
+    if cols_to_use and len(cols_to_use) >= NUMEROS_SORTEADOS:
+         try:
+            dezenas_raw = pd.to_numeric(row[cols_to_use].values, errors='coerce')
+            # Converte para tipo numérico que aceita nulos (Int64) antes de remover NAs
+            dezenas = set(pd.Series(dezenas_raw).astype('Int64').dropna().astype(int))
+            # Validação final se temos 6 dezenas únicas entre 1 e 60
+            if len(dezenas) == NUMEROS_SORTEADOS and all(1 <= d <= 60 for d in dezenas):
+                 return dezenas
+            else: return set()
+         except Exception: return set()
+    return set()
+
+def calcular_metricas_multi_freq_mega(df, freq_windows):
+    """Calcula Atraso e Frequências Recentes para múltiplas janelas (Mega-Sena)."""
+    print("   Iniciando cálculo de métricas...")
+    start_time = time.time()
+    df_sorted = df.sort_values(by='concurso').reset_index(drop=True)
+    ultimo_concurso_num = df_sorted['concurso'].iloc[-1]
+    metricas = {n: {} for n in NUMEROS_TOTAIS}
+    historico_presenca = {n: [] for n in NUMEROS_TOTAIS}
+    concursos_validos_indices = []
+    total_rows = len(df_sorted)
+
+    print(f"   Processando {total_rows} registros históricos...")
+    valid_rows_count = 0
+    for index, row in df_sorted.iterrows():
+        if (index + 1) % 500 == 0: # Indicador a cada 500 linhas
+            elapsed = time.time() - start_time
+            print(f"      Processado {index + 1}/{total_rows} (Tempo: {elapsed:.1f}s)")
+        sorteadas = obter_dezenas_sorteadas_mega(row) # Usa a função da Mega
+        if len(sorteadas) == NUMEROS_SORTEADOS: # Verifica se obteve 6 dezenas
+            valid_rows_count += 1
+            concursos_validos_indices.append(index)
+            for n in NUMEROS_TOTAIS:
+                if n not in historico_presenca: historico_presenca[n] = []
+                historico_presenca[n].append(1 if n in sorteadas else 0)
+
+    num_concursos_validos = valid_rows_count
+    if num_concursos_validos == 0: raise ValueError("Nenhum concurso válido encontrado.")
+    print(f"   ... Processamento histórico concluído em {time.time() - start_time:.1f}s ({num_concursos_validos} concursos válidos).")
+
+    print("   Calculando atraso e frequências...")
+    # Calcula Atraso
+    for n in NUMEROS_TOTAIS:
+        ultimo_aparecimento_idx = -1
+        if n in historico_presenca and historico_presenca[n]:
+            lista_presenca_n = historico_presenca[n]
+            for i in range(len(lista_presenca_n) - 1, -1, -1):
+                if lista_presenca_n[i] == 1:
+                    ultimo_aparecimento_idx = i
+                    break
+        metricas[n]['atraso'] = (num_concursos_validos - 1) - ultimo_aparecimento_idx if ultimo_aparecimento_idx != -1 else num_concursos_validos
+
+    # Calcula Frequências Recentes
+    for n in NUMEROS_TOTAIS:
+        metricas[n]['freq_raw'] = {}
+        if n in historico_presenca and historico_presenca[n]:
+            presenca_dezena = historico_presenca[n]
+            for window in freq_windows:
+                start_index = max(0, len(presenca_dezena) - window)
+                ultimos_n_presenca = presenca_dezena[start_index:]
+                freq_raw_val = sum(ultimos_n_presenca)
+                metricas[n][f'freq_rec_{window}'] = freq_raw_val
+                metricas[n]['freq_raw'][window] = freq_raw_val
+        else:
+             if 'atraso' not in metricas[n]: metricas[n]['atraso'] = num_concursos_validos
+             for window in freq_windows:
+                 metricas[n][f'freq_rec_{window}'] = 0
+                 metricas[n]['freq_raw'][window] = 0
+
+    print("   ... Cálculo de métricas concluído.")
+    return metricas
+
+def normalize_metrics_multi_freq_mega(metricas, freq_windows):
+    """Normaliza Atraso e Frequências Recentes (Mega-Sena)."""
+    print("   Normalizando métricas...")
+    norm_metrics = {n: {} for n in NUMEROS_TOTAIS}
+    atraso_values = [metricas[n]['atraso'] for n in NUMEROS_TOTAIS if 'atraso' in metricas[n]]
+    if not atraso_values: return norm_metrics
+    min_atraso, max_atraso = min(atraso_values), max(atraso_values)
+    range_atraso = max_atraso - min_atraso
+    for n in NUMEROS_TOTAIS:
+        if 'atraso' in metricas[n]:
+             norm_metrics[n]['atraso_norm'] = 0.5 if range_atraso == 0 else (metricas[n]['atraso'] - min_atraso) / range_atraso
+        else: norm_metrics[n]['atraso_norm'] = 0.5
+
+    for window in freq_windows:
+        freq_key = f'freq_rec_{window}'
+        norm_key = f'freq_rec_{window}_norm'
+        freq_values = [metricas[n][freq_key] for n in NUMEROS_TOTAIS if freq_key in metricas[n]]
+        if not freq_values: continue
+        min_freq, max_freq = min(freq_values), max(freq_values)
+        range_freq = max_freq - min_freq
+        for n in NUMEROS_TOTAIS:
+             if freq_key in metricas[n]:
+                 norm_metrics[n][norm_key] = 0.5 if range_freq == 0 else (metricas[n][freq_key] - min_freq) / range_freq
+             else: norm_metrics[n][norm_key] = 0.5
+    print("   ... Normalização concluída.")
+    return norm_metrics
+
+def calcular_indice_e_componentes_mega(metricas_normalizadas, freq_windows):
+    """Calcula o Índice e seus componentes ponderados (Mega-Sena)."""
+    print("   Calculando índices e componentes...")
+    final_indices = {w: {} for w in freq_windows}
+    atraso_components = {w: {} for w in freq_windows}
+    freq_components = {w: {} for w in freq_windows}
+
+    for n in NUMEROS_TOTAIS: # Itera de 1 a 60
+        atraso_norm = metricas_normalizadas.get(n, {}).get('atraso_norm', 0.5)
+        atraso_comp = W_ATRASO * atraso_norm
+        for window in freq_windows:
+            freq_norm = metricas_normalizadas.get(n, {}).get(f'freq_rec_{window}_norm', 0.5)
+            freq_comp = W_FREQ * freq_norm
+            indice = atraso_comp + freq_comp
+            final_indices[window][n] = indice
+            atraso_components[window][n] = atraso_comp
+            freq_components[window][n] = freq_comp
+
+    print("   ... Cálculo de índices concluído.")
+    return final_indices, atraso_components, freq_components
+
+# --- Programa Principal ---
+if __name__ == "__main__":
+    print(f"--- Mega-Sena Análise Comparativa de FreqN para Previsão do Concurso {CONCURSO_ALVO} ---")
+    print(f"--- Dados considerados ATÉ o Concurso {ULTIMO_CONCURSO_SORTEADO} ---")
+
+    if not os.path.exists(NOME_ARQUIVO):
+        print(f"\nERRO: Arquivo '{NOME_ARQUIVO}' não encontrado!")
+        print("Por favor, faça o upload do arquivo Excel da Mega-Sena para o ambiente do Google Colab.")
+    else:
+        try:
+            print(f"\n1. Carregando e preparando dados da Mega-Sena...")
+            # Leitura do arquivo
+            try:
+                df_mega = pd.read_excel(NOME_ARQUIVO, engine='openpyxl')
+            except Exception:
+                 try:
+                     df_mega = pd.read_excel(NOME_ARQUIVO, engine='xlrd')
+                 except Exception as e:
+                      print(f"ERRO: Falha ao ler o arquivo Excel da Mega-Sena: {e}")
+                      raise e
+
+            # Limpeza e Formatação
+            df_mega.columns = df_mega.columns.str.lower().str.strip().str.replace(' ', '_').str.normalize('NFKD').str.encode('ascii', errors='ignore').str.decode('utf-8')
+            if 'concurso' not in df_mega.columns:
+                 possible_concurso_cols = [col for col in df_mega.columns if 'conc' in col or 'sorteio' in col]
+                 if possible_concurso_cols:
+                     df_mega.rename(columns={possible_concurso_cols[0]: 'concurso'}, inplace=True)
+                 else: raise ValueError("Coluna 'Concurso' não encontrada no arquivo da Mega-Sena.")
+            df_mega['concurso'] = pd.to_numeric(df_mega['concurso'], errors='coerce')
+            df_mega.dropna(subset=['concurso'], inplace=True)
+            df_mega['concurso'] = df_mega['concurso'].astype(int)
+            df_mega = df_mega[df_mega['concurso'] <= ULTIMO_CONCURSO_NO_ARQUIVO]
+
+            # Anexando resultados recentes da Mega-Sena
+            print(f"   Anexando resultados dos concursos {list(resultados_novos.keys())}...")
+            novos_dados = []
+            colunas_dezenas_base = []
+            dez_cols_exist = [c for c in df_mega.columns if c.startswith(('bola', 'n')) or c.isdigit()]
+            # Usa as 6 primeiras colunas encontradas ou cria N1 a N6
+            colunas_dezenas_base = dez_cols_exist[:NUMEROS_SORTEADOS] if len(dez_cols_exist) >= NUMEROS_SORTEADOS else [f'n{i}' for i in range(1, NUMEROS_SORTEADOS + 1)]
+
+            for concurso, dezenas in resultados_novos.items():
+                 if concurso > df_mega['concurso'].max():
+                     linha = {'concurso': concurso}
+                     dezenas_list = sorted(list(dezenas))
+                     for i, d in enumerate(dezenas_list):
+                          if i < len(colunas_dezenas_base):
+                             col_name = colunas_dezenas_base[i]
+                             linha[col_name] = d
+                     for col in df_mega.columns:
+                         if col not in linha: linha[col] = pd.NA
+                     novos_dados.append(linha)
+
+            if novos_dados:
+                 df_novos = pd.DataFrame(novos_dados)
+                 cols_df = set(df_mega.columns)
+                 cols_novos = set(df_novos.columns)
+                 for col in cols_df - cols_novos: df_novos[col] = pd.NA
+                 for col in cols_novos - cols_df: df_mega[col] = pd.NA
+                 df_mega = pd.concat([df_mega, df_novos[df_mega.columns]], ignore_index=True)
+
+            # Filtro final
+            df_analise = df_mega[df_mega['concurso'] <= ULTIMO_CONCURSO_SORTEADO].copy()
+            df_analise.sort_values(by='concurso', inplace=True)
+            df_analise.reset_index(drop=True, inplace=True)
+
+            if df_analise.empty: raise ValueError(f"Nenhum dado encontrado até o concurso {ULTIMO_CONCURSO_SORTEADO}.")
+            print(f"   Analisando {len(df_analise)} concursos da Mega-Sena (até {df_analise['concurso'].iloc[-1]}).")
+
+
+            # 2. Calcular Métricas
+            print("\n2. Calculando Atraso e Frequências Recentes (Mega-Sena)...")
+            metricas = calcular_metricas_multi_freq_mega(df_analise, FREQ_WINDOWS)
+
+            # 3. Normalizar Métricas
+            print("\n3. Normalizando métricas (Mega-Sena)...")
+            norm_metrics = normalize_metrics_multi_freq_mega(metricas, FREQ_WINDOWS)
+
+            # 4. Calcular Índices e Componentes
+            print("\n4. Calculando Índices Compostos e Componentes (Mega-Sena)...")
+            indices_por_freq, atraso_comps_por_freq, freq_comps_por_freq = calcular_indice_e_componentes_mega(norm_metrics, FREQ_WINDOWS)
+
+            # 5. Gerar Relatório Detalhado e Comparativo
+            print("\n5. Gerando Relatórios (Mega-Sena)...")
+
+            # --- Relatório Detalhado por Janela ---
+            markdown_output_detalhes = f"\n## Detalhamento do Índice por Dezena e Janela FreqN (Mega-Sena)\n\n"
+            markdown_output_detalhes += f"**Para Concurso:** {CONCURSO_ALVO} | **Base:** Até {ULTIMO_CONCURSO_SORTEADO}\n"
+            markdown_output_detalhes += f"**Fórmula:** Índice = ({W_ATRASO:.1f} * Atraso_Norm) + ({W_FREQ:.1f} * FreqN_Norm)\n\n"
+
+            for window in FREQ_WINDOWS:
+                markdown_output_detalhes += f"#### Janela: Freq{window}\n\n"
+                markdown_output_detalhes += "| Dezena | Atraso (Raw) | Freq (Raw) | Atraso Comp (Pond) | Freq Comp (Pond) | Índice Final |\n"
+                markdown_output_detalhes += "|--------|--------------|------------|--------------------|------------------|--------------|\n"
+                # Ordena por índice final (maior índice = mais 'frio'/'provável ausente' pela fórmula)
+                dezenas_ordenadas = sorted(NUMEROS_TOTAIS, key=lambda n: indices_por_freq.get(window, {}).get(n, -1), reverse=True)
+
+                for n in dezenas_ordenadas:
+                     atraso_raw = metricas.get(n, {}).get('atraso', 'N/A')
+                     freq_raw = metricas.get(n, {}).get('freq_raw', {}).get(window, 'N/A')
+                     atraso_comp = atraso_comps_por_freq.get(window, {}).get(n, 0.0)
+                     freq_comp = freq_comps_por_freq.get(window, {}).get(n, 0.0)
+                     indice_final = indices_por_freq.get(window, {}).get(n, 0.0)
+                     markdown_output_detalhes += f"| {n:02d}     | {str(atraso_raw):<12} | {str(freq_raw):<10} | {atraso_comp:<18.4f} | {freq_comp:<16.4f} | {indice_final:<12.4f} |\n"
+                markdown_output_detalhes += "\n"
+
+            # --- Relatório Comparativo Top 10 (Mais 'Frias') ---
+            top_10_mais_frias = {}
+            markdown_output_comparativo = f"## Comparativo: Top 10 Dezenas 'Mais Frias' para Conc. {CONCURSO_ALVO} (Mega-Sena)\n\n"
+            markdown_output_comparativo += f"**Baseado nos resultados ATÉ o Concurso {ULTIMO_CONCURSO_SORTEADO}.**\n"
+            markdown_output_comparativo += f"**Índice = {W_ATRASO:.1f} * Atraso_Norm + {W_FREQ:.1f} * FreqN_Norm (Maior Índice = Mais 'Fria')**\n\n"
+            markdown_output_comparativo += "| Janela Freq (N) | Top 10 Dezenas com MAIOR Índice Composto              |\n"
+            markdown_output_comparativo += "|-----------------|-------------------------------------------------------|\n"
+
+            for window in FREQ_WINDOWS:
+                indices_window = indices_por_freq.get(window, {})
+                if not indices_window: continue
+                ranking_window = sorted(NUMEROS_TOTAIS, key=lambda n: indices_window.get(n, -1), reverse=True)
+                top_10 = ranking_window[:10] # Pega as 10 com maior índice
+                top_10_mais_frias[window] = top_10
+                top_10_str = ", ".join(f"{d:02d}" for d in top_10)
+                markdown_output_comparativo += f"| Freq{window:<11} | {top_10_str}         |\n"
+
+            # --- Relatório Comparativo Top 6 (Mais 'Quentes' - Menor Índice) ---
+            top_6_mais_quentes = {}
+            markdown_output_comparativo += f"\n\n## Comparativo: Top 6 Dezenas 'Mais Quentes' para Conc. {CONCURSO_ALVO} (Mega-Sena)\n\n"
+            markdown_output_comparativo += "**Índice (Menor Índice = Mais 'Quente' / Menor Atraso Ponderado + Menor Freq Recente Ponderada)**\n\n"
+            markdown_output_comparativo += "| Janela Freq (N) | Top 6 Dezenas com MENOR Índice Composto               |\n"
+            markdown_output_comparativo += "|-----------------|-------------------------------------------------------|\n"
+
+            for window in FREQ_WINDOWS:
+                 indices_window = indices_por_freq.get(window, {})
+                 if not indices_window: continue
+                 # Ordena pelo índice ASCENDENTE para pegar os menores
+                 ranking_window_asc = sorted(NUMEROS_TOTAIS, key=lambda n: indices_window.get(n, 999)) # Usa 999 para jogar NAs pro final
+                 top_6 = ranking_window_asc[:6] # Pega as 6 com menor índice
+                 top_6_mais_quentes[window] = top_6
+                 top_6_str = ", ".join(f"{d:02d}" for d in top_6)
+                 markdown_output_comparativo += f"| Freq{window:<11} | {top_6_str}            |\n"
+
+
+            # --- Exibição ---
+            print("\n" + "="*40 + " RELATÓRIO DETALHADO (Mega-Sena) " + "="*30)
+            print(markdown_output_detalhes)
+            print("\n" + "="*40 + " RELATÓRIO COMPARATIVO (Mega-Sena) " + "="*30)
+            print(markdown_output_comparativo)
+            print("="*90)
+
+
+            # Bloco de Análise Final
+            print("\n**Análise para Mega-Sena:**")
+            print("1. **Tabela Detalhada:** Veja como Atraso e Frequência (e seus componentes ponderados) variam para cada dezena (1-60) nas diferentes janelas.")
+            print("2. **Tabela Comparativa 'Mais Frias':** Mostra as 10 dezenas com MAIOR índice. Pela fórmula usada, são as que têm maior Atraso e/ou maior Frequência recente (ambos ponderados). Interprete com cuidado se isso significa 'provável ausente'.")
+            print("3. **Tabela Comparativa 'Mais Quentes':** Mostra as 6 dezenas com MENOR índice. São as que têm menor Atraso e/ou menor Frequência recente (ambos ponderados). Podem ser vistas como 'devido a sair' (baixo atraso) ou 'esfriando' (baixa freq).")
+            print("4. **Escolha sua Abordagem:** Para Mega-Sena, você pode preferir focar nas 'mais quentes' (menor índice) ou nas 'mais frias' (maior índice), ou usar as tabelas como um guia para suas próprias escolhas.")
+
+        except FileNotFoundError:
+             print(f"\nERRO CRÍTICO: O arquivo '{NOME_ARQUIVO}' não foi encontrado.")
+             print("Certifique-se de fazer o upload do arquivo Excel da Mega-Sena para o ambiente Colab.")
+        except Exception as e:
+            print(f"\nOcorreu um erro inesperado durante a execução:")
+            import traceback
+            print(traceback.format_exc()) # Imprime o traceback completo do erro *** Mega-Sena ****
